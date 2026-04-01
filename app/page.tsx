@@ -1,65 +1,299 @@
-import Image from "next/image";
+'use client';
 
-export default function Home() {
+import { useState, useEffect } from 'react';
+import { ethers } from 'ethers';
+
+const DEX1 = "0xcA03dCFfa1DA5CcE60713a8c410882CCA01d935A";
+const DEX2 = "0x6fcE2ade5fFB1CA0B2094e58dED18a6A4Cf95823";
+const TOKENA = "0x4e2FC1DAbF303B1051FB45eE676f2854b03E2a1F";
+const TOKENB = "0x1faA21bDfA7EcB554438c564eb4a4DD0Bbceb405";
+
+export default function DEXUI() {
+  const [account, setAccount] = useState("");
+  const [dexAddress, setDexAddress] = useState(DEX1);
+
+  const [reserves, setReserves] = useState({ a: 0n, b: 0n });
+  const [spotPrice, setSpotPrice] = useState("0.0000");
+
+  const [liqAmountA, setLiqAmountA] = useState("");
+  const [liqAmountB, setLiqAmountB] = useState("");
+
+  const [swapAmountA, setSwapAmountA] = useState("");
+  const [expectedOut, setExpectedOut] = useState("0");
+
+  const [removeAmount, setRemoveAmount] = useState("");
+
+  const [loading, setLoading] = useState(false);
+
+  // Connect Wallet
+  const connectWallet = async () => {
+    if (!window.ethereum) return alert("Install MetaMask");
+
+    await window.ethereum.request({
+      method: "wallet_switchEthereumChain",
+      params: [{ chainId: "0xaa36a7" }],
+    });
+
+    const provider = new ethers.BrowserProvider(window.ethereum);
+    const signer = await provider.getSigner();
+    setAccount(await signer.getAddress());
+  };
+
+  // Fetch pool data
+  const fetchPoolData = async () => {
+    try {
+      const provider = new ethers.BrowserProvider(window.ethereum);
+      const dex = new ethers.Contract(
+        dexAddress,
+        [
+          "function getReserves() view returns (uint256, uint256)",
+          "function getSpotPrice() view returns (uint256)"
+        ],
+        provider
+      );
+
+      const [resA, resB] = await dex.getReserves();
+      const price = await dex.getSpotPrice();
+
+      setReserves({ a: resA, b: resB });
+      setSpotPrice((Number(price) / 1e18).toFixed(4));
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  useEffect(() => {
+    if (account) fetchPoolData();
+  }, [account, dexAddress]);
+
+  // Ration checking
+  useEffect(() => {
+    if (!liqAmountA || reserves.a === 0n) {
+      setLiqAmountB("");
+      return;
+    }
+
+    try {
+      const amtAWei = ethers.parseEther(liqAmountA);
+
+      // exact integer math + rounding up on 1 wei to avoid precision issues
+      const amtBWei = (amtAWei * reserves.b) / reserves.a + 1n;
+
+      setLiqAmountB(ethers.formatEther(amtBWei));
+    } catch {
+      setLiqAmountB("");
+    }
+  }, [liqAmountA, reserves]);
+
+  // Swap preview
+  useEffect(() => {
+    if (!swapAmountA || reserves.a === 0n) {
+      setExpectedOut("0");
+      return;
+    }
+
+    try {
+      const amtA = ethers.parseEther(swapAmountA);
+
+      const amountInWithFee = amtA * 997n;
+      const numerator = amountInWithFee * reserves.b;
+      const denominator = (reserves.a * 1000n) + amountInWithFee;
+
+      const out = numerator / denominator;
+
+      setExpectedOut(ethers.formatEther(out));
+    } catch {
+      setExpectedOut("0");
+    }
+  }, [swapAmountA, reserves]);
+
+  // Mint tokens
+  const mintTokens = async () => {
+    setLoading(true);
+    try {
+      const provider = new ethers.BrowserProvider(window.ethereum);
+      const signer = await provider.getSigner();
+
+      const tokenA = new ethers.Contract(TOKENA, ["function mint(address,uint256)"], signer);
+      const tokenB = new ethers.Contract(TOKENB, ["function mint(address,uint256)"], signer);
+
+      await (await tokenA.mint(account, ethers.parseEther("10000"))).wait();
+      await (await tokenB.mint(account, ethers.parseEther("10000"))).wait();
+
+      alert("✅ Minted tokens");
+      fetchPoolData();
+    } catch {
+      alert("Mint failed");
+    }
+    setLoading(false);
+  };
+
+  // Add liquidity
+  const addLiquidity = async () => {
+    if (!liqAmountA || !liqAmountB) return alert("Enter amounts");
+
+    setLoading(true);
+    try {
+      const provider = new ethers.BrowserProvider(window.ethereum);
+      const signer = await provider.getSigner();
+
+      const tokenA = new ethers.Contract(TOKENA, ["function approve(address,uint256)"], signer);
+      const tokenB = new ethers.Contract(TOKENB, ["function approve(address,uint256)"], signer);
+      const dex = new ethers.Contract(dexAddress, ["function addLiquidity(uint256,uint256)"], signer);
+
+      const amtA = ethers.parseEther(liqAmountA);
+      const amtB = ethers.parseEther(liqAmountB);
+
+      await (await tokenA.approve(dexAddress, amtA)).wait();
+      await (await tokenB.approve(dexAddress, amtB)).wait();
+
+      await (await dex.addLiquidity(amtA, amtB)).wait();
+
+      alert("✅ Liquidity added");
+      setLiqAmountA("");
+      fetchPoolData();
+    } catch {
+      alert("❌ Ratio mismatch");
+    }
+    setLoading(false);
+  };
+
+  // Swap
+  const swapAForB = async () => {
+    if (!swapAmountA) return;
+
+    setLoading(true);
+    try {
+      const provider = new ethers.BrowserProvider(window.ethereum);
+      const signer = await provider.getSigner();
+
+      const tokenA = new ethers.Contract(TOKENA, ["function approve(address,uint256)"], signer);
+      const dex = new ethers.Contract(dexAddress, ["function swapAForB(uint256)"], signer);
+
+      const amt = ethers.parseEther(swapAmountA);
+
+      await (await tokenA.approve(dexAddress, amt)).wait();
+      await (await dex.swapAForB(amt)).wait();
+
+      alert("✅ Swap done");
+      setSwapAmountA("");
+      fetchPoolData();
+    } catch {
+      alert("Swap failed");
+    }
+    setLoading(false);
+  };
+
+  // Optional remove liquidity if lpbalance known and reset or clean exit for simplifying messy ratio
+  const removeLiquidity = async () => {
+    if (!removeAmount) return alert("Enter LP amount");
+
+    setLoading(true);
+    try {
+      const provider = new ethers.BrowserProvider(window.ethereum);
+      const signer = await provider.getSigner();
+
+      const dex = new ethers.Contract(
+        dexAddress,
+        ["function removeLiquidity(uint256)"],
+        signer
+      );
+
+      const amt = ethers.parseEther(removeAmount);
+
+      await (await dex.removeLiquidity(amt)).wait();
+
+      alert("✅ Liquidity removed!");
+      setRemoveAmount("");
+      fetchPoolData();
+    } catch {
+      alert("Remove failed");
+    }
+    setLoading(false);
+  };
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
+    <div className="min-h-screen bg-gray-950 text-white p-8">
+      <div className="max-w-3xl mx-auto space-y-8">
+
+        <h1 className="text-5xl font-bold text-center">DEX UI</h1>
+
+        {!account ? (
+          <button onClick={connectWallet} className="bg-blue-600 w-full py-4 rounded-2xl">
+            Connect Wallet
+          </button>
+        ) : (
+          <>
+            <div className="bg-gray-900 p-4 rounded text-center break-all">{account}</div>
+
+            {/* DEX SWITCH */}
+            <select
+              value={dexAddress}
+              onChange={(e) => setDexAddress(e.target.value)}
+              className="w-full p-3 bg-gray-800 rounded"
             >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
-        </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
-        </div>
-      </main>
+              <option value={DEX1}>DEX 1</option>
+              <option value={DEX2}>DEX 2</option>
+            </select>
+
+            <button onClick={mintTokens} className="bg-yellow-600 w-full py-2 rounded">
+              Mint Tokens
+            </button>
+
+            {/* POOL */}
+            <div className="bg-gray-900 p-4 rounded">
+              <p>Reserve A: {ethers.formatEther(reserves.a)}</p>
+              <p>Reserve B: {ethers.formatEther(reserves.b)}</p>
+              <p>Price: {spotPrice}</p>
+            </div>
+
+            {/* ADD LIQ */}
+            <div className="bg-gray-900 p-4 rounded space-y-2">
+              <input
+                placeholder="TokenA"
+                value={liqAmountA}
+                onChange={(e) => setLiqAmountA(e.target.value)}
+                className="w-full p-2 bg-gray-800"
+              />
+              <input
+                value={liqAmountB}
+                readOnly
+                className="w-full p-2 bg-gray-700"
+              />
+              <button onClick={addLiquidity} className="bg-green-600 w-full py-2">
+                Add Liquidity
+              </button>
+            </div>
+
+            {/* REMOVE LIQ */}
+            <div className="bg-gray-900 p-4 rounded space-y-2">
+              <input
+                placeholder="LP tokens to remove"
+                value={removeAmount}
+                onChange={(e) => setRemoveAmount(e.target.value)}
+                className="w-full p-2 bg-gray-800"
+              />
+              <button onClick={removeLiquidity} className="bg-red-600 w-full py-2">
+                Remove Liquidity
+              </button>
+            </div>
+
+            {/* SWAP */}
+            <div className="bg-gray-900 p-4 rounded space-y-2">
+              <input
+                placeholder="Swap A"
+                value={swapAmountA}
+                onChange={(e) => setSwapAmountA(e.target.value)}
+                className="w-full p-2 bg-gray-800"
+              />
+              <p>Expected B: {expectedOut}</p>
+              <button onClick={swapAForB} className="bg-purple-600 w-full py-2">
+                Swap
+              </button>
+            </div>
+          </>
+        )}
+      </div>
     </div>
   );
 }
