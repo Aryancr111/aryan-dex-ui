@@ -66,19 +66,22 @@ export default function DEXUI() {
     if (account) fetchPoolData();
   }, [account, dexAddress]);
 
-  // Ration checking
+  // Ratio logic fix for adding liquidity
   useEffect(() => {
-    if (!liqAmountA || reserves.a === 0n) {
+    // First liquidity if testing removal allow manual input
+    if (reserves.a === 0n && reserves.b === 0n) {
+      return;
+    }
+
+    // Normal case to calculate to maintain ratio
+    if (!liqAmountA) {
       setLiqAmountB("");
       return;
     }
 
     try {
       const amtAWei = ethers.parseEther(liqAmountA);
-
-      // exact integer math + rounding up on 1 wei to avoid precision issues
       const amtBWei = (amtAWei * reserves.b) / reserves.a + 1n;
-
       setLiqAmountB(ethers.formatEther(amtBWei));
     } catch {
       setLiqAmountB("");
@@ -151,6 +154,7 @@ export default function DEXUI() {
 
       alert("✅ Liquidity added");
       setLiqAmountA("");
+      setLiqAmountB("");
       fetchPoolData();
     } catch {
       alert("❌ Ratio mismatch");
@@ -184,7 +188,7 @@ export default function DEXUI() {
     setLoading(false);
   };
 
-  // Optional remove liquidity if lpbalance known and reset or clean exit for simplifying messy ratio
+  // Remove liquidity
   const removeLiquidity = async () => {
     if (!removeAmount) return alert("Enter LP amount");
 
@@ -226,7 +230,6 @@ export default function DEXUI() {
           <>
             <div className="bg-gray-900 p-4 rounded text-center break-all">{account}</div>
 
-            {/* DEX SWITCH */}
             <select
               value={dexAddress}
               onChange={(e) => setDexAddress(e.target.value)}
@@ -240,7 +243,6 @@ export default function DEXUI() {
               Mint Tokens
             </button>
 
-            {/* POOL */}
             <div className="bg-gray-900 p-4 rounded">
               <p>Reserve A: {ethers.formatEther(reserves.a)}</p>
               <p>Reserve B: {ethers.formatEther(reserves.b)}</p>
@@ -249,17 +251,31 @@ export default function DEXUI() {
 
             {/* ADD LIQ */}
             <div className="bg-gray-900 p-4 rounded space-y-2">
+              {reserves.a === 0n && (
+                <p className="text-yellow-400 text-sm">
+                  Set initial price (TokenA : TokenB)
+                </p>
+              )}
+
               <input
                 placeholder="TokenA"
                 value={liqAmountA}
                 onChange={(e) => setLiqAmountA(e.target.value)}
                 className="w-full p-2 bg-gray-800"
               />
+
               <input
+                placeholder={reserves.a === 0n ? "Enter TokenB" : ""}
                 value={liqAmountB}
-                readOnly
+                onChange={(e) => {
+                  if (reserves.a === 0n) {
+                    setLiqAmountB(e.target.value);
+                  }
+                }}
+                readOnly={reserves.a !== 0n}
                 className="w-full p-2 bg-gray-700"
               />
+
               <button onClick={addLiquidity} className="bg-green-600 w-full py-2">
                 Add Liquidity
               </button>
