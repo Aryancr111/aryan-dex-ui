@@ -81,7 +81,7 @@ export default function DEXUI() {
 
     try {
       const amtAWei = ethers.parseEther(liqAmountA);
-      const amtBWei = (amtAWei * reserves.b) / reserves.a + 1n;
+      const amtBWei = (amtAWei * reserves.b) / reserves.a ;
       setLiqAmountB(ethers.formatEther(amtBWei));
     } catch {
       setLiqAmountB("");
